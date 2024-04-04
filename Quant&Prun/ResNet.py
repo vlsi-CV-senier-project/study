@@ -130,7 +130,6 @@ def main():
     transform = transforms.Compose([
         transforms.Resize(224),
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
 
     trainset = torchvision.datasets.CIFAR100(root='./data', train=True, download=True, transform=transform)

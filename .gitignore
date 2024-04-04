@@ -1,8 +1,7 @@
-data/
-*.pth
 *.pt
-result/
-result2/
-models/
+*.pth
+*.txt
+data/
+RepVgg/
 *.sh
-result3/
+__pycache__
