@@ -1,7 +1,3 @@
-*.pt
-*.pth
-*.txt
-data/
-RepVgg/
-*.sh
-__pycache__
+*
+!*.py
+!*.sh
