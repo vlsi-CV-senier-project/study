@@ -37,11 +37,13 @@ def train(model,args):
 
     root_dir = './data'
     trainset = torchvision.datasets.MNIST(root = root_dir, download = True, train = True, transform=transform)
+    #validset = torchvision.datasets.MNIST(root = root_dir, download = True, train = False, transform=transform)
     num_train = len(trainset)
+    num_valid = len(validset)
+    print(f"Train data : {num_train}\tValid data : {num_valid}")
     
-    print(f"Train data \t{num_train}")
-
     train_loader = DataLoader(trainset, batch_size = 64, shuffle = True)
+    valid_loader = DataLoader(validset, batch_size = 64, shuffle = True)
 
     optimizer = torch.optim.SGD(model.parameters(),lr = args.lr)
     criterion = nn.CrossEntropyLoss()
@@ -76,56 +78,40 @@ def train(model,args):
         train_acc = train_acc/step
         print(f"Train Loss: {train_loss:.6f}\tTrain Acc: {train_acc:.4f}\tTime per epoch(min): {(end_time-start_time)/60}")
         scheduler.step()
+
+        #test
+        with torch.no_grad():
+            model.eval()
+            step = 0
+            start_time = time.time()
+            for i,sample in enumerate(valid_loader):
+                step += 1
+                optimizer.zero_grad()
+                inputs, labels = sample
+                inputs = inputs.to(DEVICE)
+                labels = labels.to(DEVICE)
+
+                outputs = model(inputs)
+                _, predicted = torch.max(outputs, 1)
+                valid_correct = torch.sum(predicted == labels).item()
+                loss = criterion(outputs,labels)
+
+                valid_loss += loss.item()
+                valid_acc += valid_correct
+
+            end_time = time.time()
+            valid_acc = valid_acc/step
+            valid_loss = valid_loss/step
+            print(f"Valid Loss : {valid_loss:.6f}\tValid Acc : {valid_acc:.4f}\tTime per epoch(min): {(end_time-start_time)/60}")
+            model_size = sum(param.numel() for param in model.parameters())
+            print(f'Model size: {model_size:,} parameters')
+
     torch.save(model.state_dict(), 'models.pth')
-    print("---Train End---")
-        
-        
-def test(model,args):
-    DEVICE = torch.device('cuda'if torch.cuda.is_available() else 'cpu')
-    print(DEVICE)
-    model.eval()
-    #dataload
-    transform = transforms.Compose([
-        transforms.Grayscale(num_output_channels=3),
-        transforms.ToTensor()
-        #use matched norm
-        #transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        ])
 
-    root_dir = '.data/'
-    validset = torchvision.datasets.MNIST(root = root_dir, download = True, train = False, transform=transform)
-    num_valid = len(validset)
 
-    print(f"Valid data \t{num_valid}")
-    valid_loader = DataLoader(validset, batch_size = 64, shuffle = True)
 
-    optimizer = torch.optim.Adam(model.parameters(),lr = args.lr)
-    criterion = nn.CrossEntropyLoss()
-    
-    with torch.no_grad():
-        model.eval()
-        step = 0
-        start_time = time.time()
-        for i,sample in enumerate(valid_loader):
-            step += 1
-            optimizer.zero_grad()
-            inputs, labels = sample
-            inputs = inputs.to(DEVICE)
-            labels = labels.to(DEVICE)
 
-            outputs = model(inputs)
-            _, predicted = torch.max(outputs, 1)
-            valid_correct = torch.sum(predicted == labels).item()
-            loss = criterion(outputs,labels)
-
-            valid_loss += loss.item()
-            valid_acc += valid_correct
-    end_time = time.time()
-    valid_acc = valid_acc/step
-    valid_loss = valid_loss/step
-    print(f"Valid Loss : {valid_loss:.6f}\tValid Acc : {valid_acc:.4f}\tTime per epoch(min): {(end_time-start_time)/60}")
-    model_size = sum(param.numel() for param in model.parameters())
-    print(f'Model size: {model_size:,} parameters')
 
 if __name__ == '__main__':
     model = vgg()
+    train(model, parse_argument())
