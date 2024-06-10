@@ -1,122 +1,158 @@
 import torch
 import torchvision
-from torchvision import transforms
+from torchvision import datasets
 import argparse
 from torch.utils.data import DataLoader
 import torch.optim as optim
 import torch.nn as nn
 import time
-import numpy as np
 import matplotlib.pyplot as plt
+#from ViT_model import ViT
+from AE_T import TransformerAutoEncoder
+from torch.optim import Adam
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.nn import MSELoss
+from torchvision.transforms import v2
+from tqdm import tqdm
+from torch.cuda.amp import GradScaler, autocast
+import torchmetrics
 
-# ViT 모델 불러오기
-from ViT_model import *
+
+# image size
+IMG_SIZE = 64
+
+train_transforms = v2.Compose([
+    v2.ToImage(),
+    v2.ToDtype(torch.uint8),
+    v2.CenterCrop(size=(IMG_SIZE, IMG_SIZE)),
+    v2.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+    v2.RandomHorizontalFlip(p=0.5),
+    v2.ToDtype(torch.float32, scale=True),
+    v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
+
+test_transforms = v2.Compose([
+    v2.ToImage(),
+    v2.ToDtype(torch.uint8),
+    v2.CenterCrop(size=(IMG_SIZE, IMG_SIZE)),
+    v2.ToDtype(torch.float32, scale=True),
+    v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
+
+# test transforms
+random_tensor = torch.randint(0, 255, (3, 224, 224), dtype=torch.uint8)
+train_transform_result = train_transforms(random_tensor)
+test_transform_result = test_transforms(random_tensor)
+print(train_transform_result.shape)
+print(test_transform_result.shape)
+
+
+# train_datasets
+train_datasets = datasets.CIFAR10(root='../../data', train=True, download=True, transform=train_transforms)
+test_datasets = datasets.CIFAR10(root='../../data', train=False, download=True, transform=test_transforms)
+# check datasets length
+print(len(train_datasets))
+print(len(test_datasets))
+
+BATCH_SIZE = 64
+
+# dataloaders
+train_dataloader = DataLoader(train_datasets, batch_size=BATCH_SIZE, shuffle=True, num_workers=16)
+test_dataloader = DataLoader(test_datasets, batch_size=BATCH_SIZE, shuffle=False, num_workers=16)
+
+# test dataloaders
+# for x, y in train_dataloader:
+#     print(x.shape, y)
+#     break
+
+# for x, y in test_dataloader:
+#     print(x.shape, y)
+#     break
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# 모델 선언
+model = TransformerAutoEncoder().to(DEVICE)
+
+# 옵티마이저, 스케줄러, 손실 함수 선언
+optimizer = Adam(model.parameters(), lr=1e-3)
+scheduler = CosineAnnealingLR(optimizer, T_max=20, eta_min=1e-6)
+criterion = MSELoss()
 
 def parse_argument():
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', default=100, type=int, help='number of total epochs to run')
     parser.add_argument('--batch_size', default=64, type=int, help='mini-batch size (default: 64)')
-    parser.add_argument('--lr', '--learning-rate', default=1e-3, type=float, help='initial learning rate')
+    parser.add_argument('--lr', default=0.001, type=float, help='initial learning rate')
     parser.add_argument('--name', default="default_name", type=str, help='name to save')
-    args = parser.parse_args()
-    return args
+    return parser.parse_args()
 
-def train(model, args):
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {DEVICE}")
 
-    model.to(DEVICE)
+def train_fn(model, dataloader, criterion, optimizer, scheduler, device, scaler):
     model.train()
-    
-    # 데이터 로드 및 변환
-    transform = transforms.Compose([
-        transforms.Resize((64, 64)),  # CIFAR-10 이미지 크기 맞춤
-        transforms.ToTensor(),
-        # transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-    ])
+    train_loss = 0.0
 
-    train_set = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
-    valid_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+    for images, _ in tqdm(dataloader, desc="Training"):
+        images = images.to(device)
+        optimizer.zero_grad()
 
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
-    valid_loader = DataLoader(valid_set, batch_size=args.batch_size, shuffle=False)
+        with torch.cuda.amp.autocast():
+            outputs = model(images)
+            loss = criterion(outputs, images)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    criterion = nn.MSELoss()
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
-    for epoch in range(args.epochs):
-        print(f"Epoch: {epoch + 1}")
-        train_loss = 0.0
-        start_time = time.time()
-
-        for inputs, _ in train_loader:
-            inputs = inputs.to(DEVICE)
-            
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, inputs)
-            loss.backward()
-            optimizer.step()
-            
-            train_loss += loss.item()
-
-        train_loss /= len(train_loader)
-        print(f"Train Loss: {train_loss:.6f}")
         scheduler.step()
+        train_loss += loss.item()
 
-        # Validation step
-        with torch.no_grad():
-            model.eval()
-            valid_loss = 0.0
-            for inputs, _ in valid_loader:
-                inputs = inputs.to(DEVICE)
-                outputs = model(inputs)
-                loss = criterion(outputs, inputs)
-                valid_loss += loss.item()
+    train_loss /= len(dataloader)
+    print(f"Train Loss: {train_loss:.4f}")
 
-            valid_loss /= len(valid_loader)
-            print(f"Validation Loss: {valid_loss:.6f}")
-
-        print(f"Time per epoch (min): {(time.time() - start_time) / 60:.2f}")
-
-    model_size = sum(param.numel() for param in model.parameters())
-    print(f'Model size: {model_size:,} parameters')
-    torch.save(model.state_dict(), f'./model/{args.name}_model.pth')
-
-def test_vit_image(args):
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = Autoencoder()  # 모델 클래스 이름 확인 필요
-    model.load_state_dict(torch.load(f'./model/{args.name}_model.pth'))
+def test_fn(model, dataloader, criterion, device):
     model.eval()
-    model.to(DEVICE)
+    test_loss = 0.0
+    psnr = 0.0
+    ssim = 0.0
 
-    transform = transforms.Compose([
-        transforms.Resize((32, 32)),  # CIFAR-10 이미지 크기 맞춤
-        transforms.ToTensor()
-    ])
+    psnr_metric = torchmetrics.image.PeakSignalNoiseRatio().to(device)
+    ssim_metric = torchmetrics.image.StructuralSimilarityIndexMeasure().to(device)
 
-    test_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
-    test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
+    with torch.no_grad():
+        for images, _ in tqdm(dataloader, desc="Testing"):
+            images = images.to(device)
 
-    for i, (inputs, _) in enumerate(test_loader):
-        inputs = inputs.to(DEVICE)
-        outputs = model(inputs)
+            with torch.cuda.amp.autocast():
+                outputs = model(images)
+                loss = criterion(outputs, images)
 
-        input_img = inputs.squeeze().cpu().permute(1, 2, 0)
-        plt.imshow(input_img.numpy())
-        plt.axis('off')
-        plt.savefig(f'./result/{args.name}_in_{i}.png')
-        plt.close()
+            test_loss += loss.item()
+            psnr += psnr_metric(outputs, images).item()
+            ssim += ssim_metric(outputs, images).item()
 
-        output_img = outputs.squeeze().cpu().permute(1, 2, 0)
-        plt.imshow(output_img.detach().numpy(), cmap='gray')
-        plt.axis('off')
-        plt.savefig(f'./result/{args.name}_out_{i}.png')
-        plt.close()
+    test_loss /= len(dataloader)
+    psnr /= len(dataloader)
+    ssim /= len(dataloader)
 
-if __name__ == '__main__':
-    args = parse_argument()
-    model = Autoencoder()  # 모델 클래스 이름 변경 필요
-    train(model, args)
-    test_vit_image(args)
+    print(f"Test Loss: {test_loss:.4f}, PSNR: {psnr:.2f}, SSIM: {ssim:.4f}")
+    return test_loss
+
+def train_autoencoder(model, train_dataloader, val_dataloader, criterion, optimizer, scheduler, device, epochs, save_period):
+    best_loss = float('inf')
+    scaler = GradScaler()
+
+    for epoch in range(epochs):
+        print(f"Epoch {epoch+1}/{epochs}")
+        train_fn(model, train_dataloader, criterion, optimizer, scheduler, device, scaler)
+        
+        if val_dataloader is not None:
+            val_loss = test_fn(model, val_dataloader, criterion, device)
+            if val_loss < best_loss:
+                best_loss = val_loss
+                torch.save(model.state_dict(), f"./model/best_model_epoch_{epoch+1}.pth")
+        
+        # if (epoch + 1) % save_period == 0:
+        #     torch.save(model.state_dict(), f"model_epoch_{epoch+1}.pth")
+    return model
+
+model = train_autoencoder(model, train_dataloader, test_dataloader, criterion, optimizer, scheduler, DEVICE, epochs=100, save_period=5)

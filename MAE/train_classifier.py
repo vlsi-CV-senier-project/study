@@ -65,10 +65,19 @@ if __name__ == '__main__':
     class_total = list(0. for i in range(num_classes))
 
     optim.zero_grad()
+    def top5_accuracy(output, target):
+        """Compute the top5 accuracy of the model."""
+        _, top5 = output.topk(5, 1, True, True)
+        correct = top5.eq(target.view(-1, 1).expand_as(top5))
+        top5_acc = correct[:, :5].any(dim=1).float().mean()
+        return top5_acc
+
+    # 훈련 및 검증 루프 수정
     for e in range(args.total_epoch):
         model.train()
         losses = []
         acces = []
+        top5_acces = []
         for img, label in tqdm(iter(train_dataloader)):
             step_count += 1
             img = img.to(device)
@@ -76,40 +85,41 @@ if __name__ == '__main__':
             logits = model(img)
             loss = loss_fn(logits, label)
             acc = acc_fn(logits, label)
+            top5_acc = top5_accuracy(logits, label)
             loss.backward()
             if step_count % steps_per_update == 0:
                 optim.step()
                 optim.zero_grad()
             losses.append(loss.item())
             acces.append(acc.item())
+            top5_acces.append(top5_acc.item())
         lr_scheduler.step()
         avg_train_loss = sum(losses) / len(losses)
         avg_train_acc = sum(acces) / len(acces)
-        print(f'In epoch {e}, average training loss is {avg_train_loss}, average training acc is {avg_train_acc}.')
+        avg_train_top5_acc = sum(top5_acces) / len(top5_acces)
+        print(f'In epoch {e}, average training loss is {avg_train_loss}, average training acc is {avg_train_acc}, average training top5 acc is {avg_train_top5_acc}.')
 
         model.eval()
         with torch.no_grad():
             losses = []
             acces = []
+            top5_acces = []
             for img, label in tqdm(iter(val_dataloader)):
                 img = img.to(device)
                 label = label.to(device)
                 logits = model(img)
                 loss = loss_fn(logits, label)
                 acc = acc_fn(logits, label)
+                top5_acc = top5_accuracy(logits, label)
                 losses.append(loss.item())
                 acces.append(acc.item())
-
-                _, predictions = torch.max(logits, 1)
-                correct = (predictions == label)
-                for i in range(len(label)):
-                    label_i = label[i]
-                    class_correct[label_i] += correct[i].item()
-                    class_total[label_i] += 1
-
+                top5_acces.append(top5_acc.item())
+                
             avg_val_loss = sum(losses) / len(losses)
             avg_val_acc = sum(acces) / len(acces)
-            print(f'In epoch {e}, average validation loss is {avg_val_loss}, average validation acc is {avg_val_acc}.')  
+            avg_val_top5_acc = sum(top5_acces) / len(top5_acces)
+            print(f'In epoch {e}, average validation loss is {avg_val_loss}, average validation acc is {avg_val_acc}, average validation top5 acc is {avg_val_top5_acc}.')
+
 
         if avg_val_acc > best_val_acc:
             best_val_acc = avg_val_acc

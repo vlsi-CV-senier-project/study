@@ -110,8 +110,11 @@ def train(model,args):
 
 
 
-
+# args_dict = vars(args)
+#     print(args_dict)
 
 if __name__ == '__main__':
     model = vgg()
     train(model, parse_argument())
+    args_dict = vars(args)
+    print(args_dict)

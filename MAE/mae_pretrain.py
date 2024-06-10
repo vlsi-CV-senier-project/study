@@ -4,7 +4,7 @@ import math
 import torch
 import torchvision
 from torch.utils.tensorboard import SummaryWriter
-from torchvision.transforms.v2 import Compose, ToImage, ToDtype, Normalize
+from torchvision.transforms.v2 import ToTensor, Compose, Normalize
 from tqdm import tqdm
 
 from model import *
